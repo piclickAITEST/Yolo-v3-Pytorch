@@ -13,6 +13,7 @@
 *.MOV
 *.avi
 *.json
+*.jpeg
 
 # output from nohup
 nohup.out
