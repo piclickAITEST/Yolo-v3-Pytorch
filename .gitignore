@@ -12,17 +12,16 @@
 *.mov
 *.MOV
 *.avi
-*.data
 *.json
-*.out
+
+# output from nohup
+nohup.out
+
 *.cfg
 !cfg/yolov3*.cfg
 !cfg/fashion.cfg
 
 runs/*
-training_history/*
-
-
 pycocotools/*
 results*.txt
 gcp_test*.sh
