@@ -17,6 +17,7 @@
 
 *.cfg
 !cfg/yolov3*.cfg
+!cfg/fashion.cfg
 
 runs/*
 data/*
@@ -32,6 +33,11 @@ data/*
 !data/5k.shapes
 !data/5k.txt
 !data/*.sh
+
+!data/fashion/*
+
+training_history
+
 
 pycocotools/*
 results*.txt
