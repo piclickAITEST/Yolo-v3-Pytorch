@@ -1,5 +1,0 @@
-classes=15
-train=../data/fashion_google/trainval.txt
-valid=../data/fashion_google/val.txt
-names=./data/fashion/fashion.names
-backup=backup/
