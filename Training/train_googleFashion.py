@@ -11,12 +11,10 @@ from utils.utils import *
 
 # Training mixed precision
 mixed_precision = True
-#mixed_precision = False
 if mixed_precision:
     from apex import amp
-    print('apex is running')
-else:
-    print('apex is not nunning')
+    print("Apex Loaded !")
+
 
 wdir = 'weights' + os.sep  # weights dir
 last = wdir + 'last.pt'
@@ -306,8 +304,8 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=150)  # 500200 batches at bs 16, 117263 images = 273 epochs
     parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/fashion.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/fashion/fashion.data', help='*.data file path')
+    parser.add_argument('--cfg', type=str, default='cfg/fashion_c15.cfg', help='cfg file path')
+    parser.add_argument('--data', type=str, default='data/fashion/fashion_c15.data', help='*.data file path')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', action='store_true', help='resume training from last.pt')
