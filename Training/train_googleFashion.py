@@ -11,7 +11,12 @@ from utils.utils import *
 
 # Training mixed precision
 mixed_precision = True
-from apex import amp
+#mixed_precision = False
+if mixed_precision:
+    from apex import amp
+    print('apex is running')
+else:
+    print('apex is not nunning')
 
 wdir = 'weights' + os.sep  # weights dir
 last = wdir + 'last.pt'

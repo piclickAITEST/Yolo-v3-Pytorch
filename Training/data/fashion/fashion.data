@@ -1,5 +1,5 @@
 classes=15
-train=/home/piclick/data/mixed_trainval.txt
-valid=/home/piclick/data/mixed_val.txt
+train=/home/piclick/data/fashion_google/trainval.txt
+valid=/home/piclick/data/fashion_google/val.txt
 names=./data/fashion/fashion.names
 backup=backup/
