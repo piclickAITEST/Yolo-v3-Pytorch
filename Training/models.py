@@ -23,11 +23,12 @@ def create_modules(module_defs, img_size, arc):
             bn = int(mdef['batch_normalize'])
             filters = int(mdef['filters'])
             kernel_size = int(mdef['size'])
+            stride = int(mdef['stride']) if 'stride' in mdef else (int(mdef['stride_y']), int(mdef['stride_x']))
             pad = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
             modules.add_module('Conv2d', nn.Conv2d(in_channels=output_filters[-1],
                                                    out_channels=filters,
                                                    kernel_size=kernel_size,
-                                                   stride=int(mdef['stride']),
+                                                   stride=stride,
                                                    padding=pad,
                                                    bias=not bn))
             if bn:
@@ -35,7 +36,8 @@ def create_modules(module_defs, img_size, arc):
             if mdef['activation'] == 'leaky':  # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
                 # modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))
-                # modules.add_module('activation', Swish())
+            elif mdef['activation'] == 'swish':
+                modules.add_module('activation', Swish())
 
         elif mdef['type'] == 'maxpool':
             kernel_size = int(mdef['size'])
@@ -112,12 +114,31 @@ def create_modules(module_defs, img_size, arc):
     return module_list, routs
 
 
-class Swish(nn.Module):
-    def __init__(self):
-        super(Swish, self).__init__()
+class SwishImplementation(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, i):
+        ctx.save_for_backward(i)
+        return i * torch.sigmoid(i)
 
+    @staticmethod
+    def backward(ctx, grad_output):
+        sigmoid_i = torch.sigmoid(ctx.saved_variables[0])
+        return grad_output * (sigmoid_i * (1 + ctx.saved_variables[0] * (1 - sigmoid_i)))
+
+
+class MemoryEfficientSwish(nn.Module):
     def forward(self, x):
-        return x * torch.sigmoid(x)
+        return SwishImplementation.apply(x)
+
+
+class Swish(nn.Module):
+    def forward(self, x):
+        return x.mul_(torch.sigmoid(x))
+
+
+class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
+    def forward(self, x):
+        return x.mul_(F.softplus(x).tanh())
 
 
 class YOLOLayer(nn.Module):
@@ -136,49 +157,24 @@ class YOLOLayer(nn.Module):
             nx = int(img_size[1] / stride)  # number x grid points
             ny = int(img_size[0] / stride)  # number y grid points
             create_grids(self, img_size, (nx, ny))
+    
 
     def forward(self, p, img_size, var=None):
-        if ONNX_EXPORT:
-            bs = 1  # batch size
-        else:
-            bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
-            if (self.nx, self.ny) != (nx, ny):
-                create_grids(self, img_size, (nx, ny), p.device, p.dtype)
+        bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
+        if (self.nx, self.ny) != (nx, ny):
+            create_grids(self, img_size, (nx, ny), p.device, p.dtype)
 
-        # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
         p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
 
         if self.training:
             return p
 
-        elif ONNX_EXPORT:
-            # Constants CAN NOT BE BROADCAST, ensure correct shape!
-            ngu = self.ng.repeat((1, self.na * self.nx * self.ny, 1))
-            grid_xy = self.grid_xy.repeat((1, self.na, 1, 1, 1)).view((1, -1, 2))
-            anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view((1, -1, 2)) / ngu
-
-            p = p.view(-1, 5 + self.nc)
-            xy = torch.sigmoid(p[..., 0:2]) + grid_xy[0]  # x, y
-            wh = torch.exp(p[..., 2:4]) * anchor_wh[0]  # width, height
-            p_conf = torch.sigmoid(p[:, 4:5])  # Conf
-            p_cls = F.softmax(p[:, 5:85], 1) * p_conf  # SSD-like conf
-            return torch.cat((xy / ngu[0], wh, p_conf, p_cls), 1).t()
-
-            # p = p.view(1, -1, 5 + self.nc)
-            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
-            # wh = torch.exp(p[..., 2:4]) * anchor_wh  # width, height
-            # p_conf = torch.sigmoid(p[..., 4:5])  # Conf
-            # p_cls = p[..., 5:5 + self.nc]
-            # # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
-            # # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
-            # p_cls = torch.exp(p_cls).permute((2, 1, 0))
-            # p_cls = p_cls / p_cls.sum(0).unsqueeze(0) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
-            # p_cls = p_cls.permute(2, 1, 0)
-            # return torch.cat((xy / ngu, wh, p_conf, p_cls), 2).squeeze().t()
-
         else:  # inference
             # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
-            io = p.clone()  # inference output
+            fut = torch.jit._fork(cloning, p)
+            io = torch.jit._wait(fut)
+            
+            #io = p.clone()  # inference output
             io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
             # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
@@ -198,7 +194,9 @@ class YOLOLayer(nn.Module):
 
             # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
             return io.view(bs, -1, 5 + self.nc), p
-
+    
+    def cloning(x):
+        return x.clone()
 
 class Darknet(nn.Module):
     # YOLOv3 object detection model
@@ -305,7 +303,7 @@ def load_darknet_weights(self, weights, cutoff=-1):
         self.version = np.fromfile(f, dtype=np.int32, count=3)  # (int32) version info: major, minor, revision
         self.seen = np.fromfile(f, dtype=np.int64, count=1)  # (int64) number of images seen during training
 
-        weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
+        weights = np.fromfile(f, dtype=np.float32)  # the rest are weights
 
     ptr = 0
     for i, (mdef, module) in enumerate(zip(self.module_defs[:cutoff], self.module_list[:cutoff])):
@@ -404,23 +402,26 @@ def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
 def attempt_download(weights):
     # Attempt to download pretrained weights if not found locally
 
-    msg = weights + ' missing, download from https://drive.google.com/drive/folders/1uxgUBemJVw9wZsdpboYbzUN4bcRhsuAI'
+    msg = weights + ' missing, download from https://drive.google.com/open?id=1LezFG5g3BCW6iYaV89B2i64cqEUZD7e0'
     if weights and not os.path.isfile(weights):
         file = Path(weights).name
 
         if file == 'yolov3-spp.weights':
-            gdrive_download(id='1oPCHKsM2JpM-zgyepQciGli9X0MTsJCO', name=weights)
+            gdrive_download(id='16lYS4bcIdM2HdmyJBVDOvt3Trx6N3W2R', name=weights)
+        elif file == 'yolov3.weights':
+            gdrive_download(id='1uTlyDWlnaqXcsKOktP5aH_zRDbfcDp-y', name=weights)
         elif file == 'yolov3-spp.pt':
-            gdrive_download(id='1vFlbJ_dXPvtwaLLOu-twnjK4exdFiQ73', name=weights)
+            gdrive_download(id='1f6Ovy3BSq2wYq4UfvFUpxJFNDFfrIDcR', name=weights)
         elif file == 'yolov3.pt':
-            gdrive_download(id='11uy0ybbOXA2hc-NJkJbbbkDwNX1QZDlz', name=weights)
+            gdrive_download(id='1SHNFyoe5Ni8DajDNEqgB2oVKBb_NoEad', name=weights)
         elif file == 'yolov3-tiny.pt':
-            gdrive_download(id='1qKSgejNeNczgNNiCn9ZF_o55GFk1DjY_', name=weights)
+            gdrive_download(id='10m_3MlpQwRtZetQxtksm9jqHrPTHZ6vo', name=weights)
         elif file == 'darknet53.conv.74':
-            gdrive_download(id='18xqvs_uwAqfTXp-LJCYLYNHBOcrwbrp0', name=weights)
+            gdrive_download(id='1WUVBid-XuoUBmvzBVUCBl_ELrzqwA8dJ', name=weights)
         elif file == 'yolov3-tiny.conv.15':
-            gdrive_download(id='140PnSedCsGGgu3rOD6Ez4oI6cdDzerLC', name=weights)
-
+            gdrive_download(id='1Bw0kCpplxUqyRYAJr9RY9SGnOJbo9nEj', name=weights)
+        elif file == 'ultralytics49.pt':
+            gdrive_download(id='158g62Vs14E3aj7oPVPuEnNZMKFNgGyNq', name=weights)
         else:
             try:  # download from pjreddie.com
                 url = 'https://pjreddie.com/media/files/' + file
@@ -430,4 +431,6 @@ def attempt_download(weights):
                 print(msg)
                 os.system('rm ' + weights)  # remove partial downloads
 
+        if os.path.getsize(weights) < 5E6:  # weights < 5MB (too small), download failed
+            os.remove(weights)  # delete corrupted weightsfile
         assert os.path.exists(weights), msg  # download missing weights from Google Drive

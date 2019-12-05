@@ -164,7 +164,7 @@ def train():
     model.arc = opt.arc  # attach yolo architecture
     model.hyp = hyp  # attach hyperparameters to model
     # model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
-    model_info(model, report='summary')  # 'full' or 'summary'
+    torch_utils.model_info(model, report='summary')  # 'full' or 'summary'
     nb = len(dataloader)
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'
@@ -302,7 +302,7 @@ def train():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=150)  # 500200 batches at bs 16, 117263 images = 273 epochs
-    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=80)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
     parser.add_argument('--cfg', type=str, default='cfg/fashion_c15.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/fashion/fashion_c15.data', help='*.data file path')

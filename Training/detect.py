@@ -6,7 +6,7 @@ from utils.datasets import *
 from utils.utils import *
 
 
-def detect(save_txt=True, save_img=False):
+def detect(save_txt=False, save_img=False):
     img_size = (320, 192) if ONNX_EXPORT else opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
     out, source, weights, half, view_img = opt.output, opt.source, opt.weights, opt.half, opt.view_img
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
@@ -27,6 +27,13 @@ def detect(save_txt=True, save_img=False):
     else:  # darknet format
         _ = load_darknet_weights(model, weights)
 
+    # Second-stage classifier
+    classify = False
+    if classify:
+        modelc = torch_utils.load_classifier(name='resnet101', n=2)  # initialize
+        modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
+        modelc.to(device).eval()
+
     # Fuse Conv2d + BatchNorm2d layers
     # model.fuse()
 
@@ -36,7 +43,13 @@ def detect(save_txt=True, save_img=False):
     # Export mode
     if ONNX_EXPORT:
         img = torch.zeros((1, 3) + img_size)  # (1, 3, 320, 192)
-        torch.onnx.export(model, img, 'weights/export.onnx', verbose=True)
+        torch.onnx.export(model, img, 'weights/export.onnx', verbose=False, opset_version=11)
+
+        # Validate exported model
+        import onnx
+        model = onnx.load('weights/export.onnx')  # Load the ONNX model
+        onnx.checker.check_model(model)  # Check that the IR is well formed
+        print(onnx.helper.printable_graph(model.graph))  # Print a human readable representation of the graph
         return
 
     # Half precision
@@ -67,9 +80,20 @@ def detect(save_txt=True, save_img=False):
         img = torch.from_numpy(img).to(device)
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
-        pred, _ = model(img)
+        pred = model(img)[0]
 
-        for i, det in enumerate(non_max_suppression(pred, opt.conf_thres, opt.nms_thres)):  # detections per image
+        if opt.half:
+            pred = pred.float()
+
+        # Apply NMS
+        pred = non_max_suppression(pred, opt.conf_thres, opt.nms_thres)
+
+        # Apply
+        if classify:
+            pred = apply_classifier(pred, modelc, img, im0s)
+
+        # Process detections
+        for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
                 p, s, im0 = path[i], '%g: ' % i, im0s[i]
             else:
@@ -128,14 +152,14 @@ def detect(save_txt=True, save_img=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='cfg/fashion.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/fashion/fashion.data', help='fashion.data file path')
-    parser.add_argument('--weights', type=str, default='weights/exp1/best.pt', help='path to weights file')
-    parser.add_argument('--source', type=str, default='../../data/fashion_google/images/test/', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--cfg', type=str, default='cfg/fashion_c15.cfg', help='cfg file path')
+    parser.add_argument('--data', type=str, default='data/fashion/fashion_c15.data', help='coco.data file path')
+    parser.add_argument('--weights', type=str, default='weights/yolov3.weights', help='path to weights file')
+    parser.add_argument('--source', type=str, default='test/', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
-    parser.add_argument('--nms-thres', type=float, default=0.6, help='iou threshold for non-maximum suppression')
+    parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
+    parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
